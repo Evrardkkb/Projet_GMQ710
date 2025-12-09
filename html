@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Test carte Flask</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+  <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+  <style>
+    body,html{margin:0;height:100%}
+    #map{position:absolute;left:300px;right:0;top:0;bottom:0;}
+    #panel{position:absolute;left:0;top:0;bottom:0;width:300px;padding:16px;background:#f8f8f8;overflow:auto}
+    button{display:block;margin-top:8px;padding:10px;width:100%}
+    .stat{background:white;padding:8px;margin-top:8px;border-radius:6px}
+  </style>
+</head>
+<body>
+
+<div id="panel">
+  <h3>Test carte</h3>
+  <label>Buffer (m)</label>
+  <input id="buffer" type="number" value="400" />
+  <button id="btnCompute">Calculer buffer</button>
+  <button id="btnDebug">Liste fichiers data/</button>
+
+  <div class="stat" id="s_arrets">Arrêts couverts: —</div>
+  <div class="stat" id="s_pop">Population: —</div>
+  <div class="stat" id="s_area">Superficie km²: —</div>
+  <div class="stat" id="s_lignes">Longueur lignes km: —</div>
+
+</div>
+
+<div id="map"></div>
+
+<script>
+  var map = L.map('map').setView([45.404, -71.89], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+  let stopsCluster = L.markerClusterGroup();
+  let linesLayer = null;
+  let zonesServ = null, zonesNServ = null, bufferLayer = null;
+
+  // Charger couches brutes (si présentes)
+  fetch('/data/arrets').then(r=>r.json()).then(data=>{
+    L.geoJSON(data, {
+      pointToLayer: (f,latlng) => L.marker(latlng),
+      onEachFeature: (f,l) => {
+        const p = f.properties || {};
+        l.bindPopup("<b>Arrêt</b><br>"+(p.NOM||p.nom||p.name||""));
+      }
+    }).eachLayer(l => stopsCluster.addLayer(l));
+    map.addLayer(stopsCluster);
+  });
+
+  fetch('/data/lignes').then(r=>r.json()).then(data=>{
+    linesLayer = L.geoJSON(data, { style:{color:'purple', weight:3} }).addTo(map);
+  });
+
+  // debug files
+  document.getElementById('btnDebug').addEventListener('click', ()=>{
+    fetch('/debug_files').then(r=>r.json()).then(j=>{
+      alert("Fichiers data/: \n" + j.files.join("\n") + "\n\nDetected:\n" + JSON.stringify(j.detected,null,2));
+      console.log("DEBUG_FILES:", j);
+    });
+  });
+
+  // compute buffer
+  document.getElementById('btnCompute').addEventListener('click', ()=>{
+    const b = document.getElementById('buffer').value || 400;
+    const form = new FormData();
+    form.append('buffer', b);
+
+    fetch('/compute_buffer', { method:'POST', body:form })
+      .then(r=>r.json())
+      .then(j=>{
+        console.log("compute_buffer response:", j);
+
+        if (bufferLayer) map.removeLayer(bufferLayer);
+        if (zonesServ) map.removeLayer(zonesServ);
+        if (zonesNServ) map.removeLayer(zonesNServ);
+
+        bufferLayer = L.geoJSON(j.buffer, { style: { color:'red', fillOpacity:0.12 } }).addTo(map);
+        zonesServ = L.geoJSON(j.zones_serv, { style:{ color:'green', fillOpacity:0.25 } }).addTo(map);
+        zonesNServ = L.geoJSON(j.zones_nserv, { style:{ color:'#c62828', fillOpacity:0.12 } }).addTo(map);
+
+        // update stats
+        document.getElementById('s_arrets').innerText = "Arrêts couverts: " + j.stats.arrets_couverts;
+        document.getElementById('s_pop').innerText = "Population: " + (j.stats.population_couverte ?? 'N/A');
+        document.getElementById('s_area').innerText = "Superficie km²: " + (j.stats.superficie_km2 ?? 'N/A');
+        document.getElementById('s_lignes').innerText = "Longueur lignes km: " + (j.stats.longueur_lignes_km ?? 'N/A');
+
+        // fit bounds if buffer exists
+        try {
+          const bnds = bufferLayer.getBounds();
+          if (bnds.isValid()) map.fitBounds(bnds.pad(0.2));
+        } catch(e){ console.warn(e); }
+      })
+      .catch(err=>{
+        console.error("Erreur compute_buffer:", err);
+        alert("Erreur lors de l'appel /compute_buffer — regarde la console du serveur et la console navigateur.");
+      });
+  });
+
+</script>
+</body>
+</html>
