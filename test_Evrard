@@ -1,0 +1,528 @@
+from flask import Flask, Response
+
+app = Flask(__name__)
+
+@app.route("/")
+def index():
+    html_content = """<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Analyse des zones tampons - Arrêts de bus</title>
+
+<!-- Leaflet CSS -->
+<link
+  rel="stylesheet"
+  href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+/>
+
+<!-- Leaflet JS -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<!-- Turf.js -->
+<script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+
+<style>
+  /* Reset */
+  * {
+    box-sizing: border-box;
+  }
+
+  body, html {
+    margin: 0;
+    height: 100%;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: #f4f7fa;
+    color: #333;
+  }
+
+  /* Side panel */
+  #panel {
+    position: absolute;
+    top: 0; left: 0;
+    width: 320px;
+    height: 100vh;
+    background: #fff;
+    border-right: 1px solid #ddd;
+    box-shadow: 2px 0 8px rgba(0,0,0,0.05);
+    padding: 20px;
+    overflow-y: auto;
+    z-index: 1000;
+  }
+
+  #panel h2 {
+    margin-top: 0;
+    font-weight: 700;
+    color: #005b96;
+  }
+
+  #panel label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: #005b96;
+  }
+
+  #panel input[type=number], #bufferSelect {
+    width: 100%;
+    padding: 8px;
+    font-size: 1rem;
+    border: 1.5px solid #ccc;
+    border-radius: 5px;
+    margin-bottom: 15px;
+    transition: border-color 0.2s;
+  }
+  #panel input[type=number]:focus, #bufferSelect:focus {
+    border-color: #007acc;
+    outline: none;
+  }
+
+  button {
+    background: #007acc;
+    color: white;
+    border: none;
+    padding: 12px 20px;
+    font-weight: 600;
+    font-size: 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+    margin-bottom: 12px;
+    width: 100%;
+    box-shadow: 0 4px 6px rgba(0, 122, 204, 0.3);
+    transition: background-color 0.3s ease;
+  }
+  button:hover {
+    background: #005b96;
+  }
+  button:disabled {
+    background: #ccc;
+    cursor: default;
+    box-shadow: none;
+  }
+
+  #stats {
+    margin-top: 20px;
+    background: #eef6fc;
+    border: 1px solid #a7c7e7;
+    padding: 15px;
+    border-radius: 7px;
+    font-size: 0.95rem;
+    line-height: 1.5;
+    color: #004080;
+  }
+
+  /* Map */
+  #map {
+    position: absolute;
+    top: 0;
+    left: 320px;
+    right: 0;
+    bottom: 0;
+    z-index: 0;
+  }
+
+  /* Checkbox group */
+  .checkbox-group {
+    margin-bottom: 20px;
+  }
+  .checkbox-group label {
+    display: flex;
+    align-items: center;
+    margin-bottom: 8px;
+    cursor: pointer;
+    user-select: none;
+    font-weight: 600;
+    color: #004080;
+  }
+  .checkbox-group input[type="checkbox"] {
+    margin-right: 8px;
+    transform: scale(1.2);
+  }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <h2>Analyse d'accessibilité</h2>
+
+  <label for="bufferDist">Distance du buffer (en mètres)</label>
+  <input
+    type="number"
+    id="bufferDist"
+    value="500"
+    min="50"
+    step="50"
+    title="Définir la distance pour les zones tampons"
+  />
+
+  <label for="bufferSelect">Choisir un arrêt pour buffer individuel</label>
+  <select id="bufferSelect">
+    <option value="">-- Aucun --</option>
+  </select>
+
+  <button id="btnBuffersAll">Afficher zones tampons (tous les arrêts)</button>
+  <button id="btnIndivAnalysis">Analyser individuellement (clic sur arrêt)</button>
+  <button id="btnNonDesservies">Afficher zones non desservies</button>
+
+  <hr />
+
+  <div class="checkbox-group">
+    <label><input type="checkbox" checked id="chkLignes" /> Lignes de bus</label>
+    <label><input type="checkbox" checked id="chkStops" /> Arrêts</label>
+    <label><input type="checkbox" checked id="chkAdresses" /> Adresses (cachées)</label>
+  </div>
+
+  <div id="stats">
+    <b>Indicateurs</b><br />
+    <p><strong>Arrêts couverts :</strong> <span id="statStops">-</span></p>
+    <p><strong>% adresses couvertes :</strong> <span id="statAdr">-</span></p>
+    <p><strong>Superficie desservie :</strong> <span id="statArea">-</span> m²</p>
+  </div>
+
+  <div style="font-size:0.85rem; color:#666; margin-top:15px;">
+    Cliquez sur un arrêt après avoir activé "Analyser individuellement" pour voir les indicateurs locaux.
+  </div>
+</div>
+
+<div id="map"></div>
+
+<script>
+  // === INIT CARTE ===
+  const map = L.map('map').setView([45.4, -71.9], 12);
+
+  // Fonds de carte
+  const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors'
+  });
+
+  osm.addTo(map);
+
+  // === GROUPES DE COUCHES ===
+  // IMPORTANT : buffers en dessous donc on ne les ajoute pas en premier (pour Leaflet l'ordre d'ajout détermine la superposition)
+  const couches = {
+    buffers: L.layerGroup().addTo(map),       // buffers sous les autres couches
+    nonDesservies: L.layerGroup().addTo(map), // zones non desservies (rouge), aussi sous couches lignes/stops
+    lignes: L.layerGroup().addTo(map),
+    stops: L.layerGroup().addTo(map),
+    adresses: L.layerGroup(), // caché par défaut
+    indivBuffer: L.layerGroup().addTo(map),
+  };
+
+  // === VARIABLES GLOBALES GEOJSON ===
+  let geoLignes, geoStops, geoAdresses, geoSherbrooke;
+
+  // === CHARGEMENT DES DONNÉES ===
+  fetch('/static/lignes_bus.geojson')
+    .then(res => res.json())
+    .then(data => {
+      geoLignes = data;
+      const lignesLayer = L.geoJSON(data, {
+        style: { color: '#1f78b4', weight: 3 }
+      });
+      lignesLayer.addTo(couches.lignes);
+    });
+
+  fetch('/static/stop.geojson')
+    .then(res => res.json())
+    .then(data => {
+      geoStops = data;
+      const stopsLayer = L.geoJSON(data, {
+        pointToLayer: (f, ll) =>
+          L.circleMarker(ll, {
+            radius: 6,
+            fillColor: '#e31a1c',
+            color: '#800000',
+            weight: 1,
+            fillOpacity: 0.9,
+            cursor: 'pointer'
+          })
+      });
+      stopsLayer.addTo(couches.stops);
+
+      // Remplissage du select des arrêts
+      const select = document.getElementById('bufferSelect');
+      data.features.forEach((feature, index) => {
+        const name = feature.properties?.name || `Arrêt ${index+1}`;
+        const option = document.createElement('option');
+        option.value = index; // on garde l’index pour retrouver la feature
+        option.textContent = name;
+        select.appendChild(option);
+      });
+    });
+
+  fetch('/static/adresse.geojson')
+    .then(res => res.json())
+    .then(data => {
+      geoAdresses = data;
+      // Non ajouté à la carte, mais utilisé pour calculs
+    });
+
+  fetch('/static/sherbrooke.geojson')
+    .then(res => res.json())
+    .then(data => {
+      geoSherbrooke = data;
+    });
+
+  // === CONTROLES DES COUCHES ===
+  document.getElementById('chkLignes').addEventListener('change', e => {
+    if (e.target.checked) couches.lignes.addTo(map);
+    else map.removeLayer(couches.lignes);
+  });
+
+  document.getElementById('chkStops').addEventListener('change', e => {
+    if (e.target.checked) couches.stops.addTo(map);
+    else map.removeLayer(couches.stops);
+  });
+
+  document.getElementById('chkAdresses').addEventListener('change', e => {
+    if (e.target.checked) couches.adresses.addTo(map);
+    else map.removeLayer(couches.adresses);
+  });
+
+  // === VARIABLES MODE ===
+  let modeAnalyseIndiv = false;
+  let zonesNonDesserviesVisible = false;
+
+  // === BOUTONS ===
+  const btnBuffersAll = document.getElementById('btnBuffersAll');
+  const btnIndivAnalysis = document.getElementById('btnIndivAnalysis');
+  const btnNonDesservies = document.getElementById('btnNonDesservies');
+  const bufferSelect = document.getElementById('bufferSelect');
+
+  btnBuffersAll.addEventListener('click', () => {
+    modeAnalyseIndiv = false;
+    couches.indivBuffer.clearLayers();
+    couches.nonDesservies.clearLayers();
+    zonesNonDesserviesVisible = false;
+    btnNonDesservies.textContent = "Afficher zones non desservies";
+    bufferSelect.value = "";
+    afficherZonesTamponsTous();
+  });
+
+  btnIndivAnalysis.addEventListener('click', () => {
+    modeAnalyseIndiv = true;
+    couches.buffers.clearLayers();
+    couches.nonDesservies.clearLayers();
+    zonesNonDesserviesVisible = false;
+    btnNonDesservies.textContent = "Afficher zones non desservies";
+    bufferSelect.value = "";
+    document.getElementById('statStops').textContent = '-';
+    document.getElementById('statAdr').textContent = '-';
+    document.getElementById('statArea').textContent = '-';
+    alert('Mode analyse individuelle activé. Cliquez sur un arrêt sur la carte.');
+  });
+
+  btnNonDesservies.addEventListener('click', () => {
+    if (!geoSherbrooke) {
+      alert("Les données de la limite de Sherbrooke ne sont pas chargées.");
+      return;
+    }
+    if (!couches.unionBuffer) {
+      alert("Veuillez d'abord afficher les zones tampons.");
+      return;
+    }
+
+    if (zonesNonDesserviesVisible) {
+      couches.nonDesservies.clearLayers();
+      zonesNonDesserviesVisible = false;
+      btnNonDesservies.textContent = "Afficher zones non desservies";
+    } else {
+      const sherbrookePoly = geoSherbrooke.features[0];
+      const diff = turf.difference(sherbrookePoly, couches.unionBuffer);
+
+      if (!diff) {
+        alert("Aucune zone non desservie détectée !");
+        return;
+      }
+
+      L.geoJSON(diff, {
+        style: {
+          color: '#b71c1c',
+          fillColor: '#ef5350',
+          fillOpacity: 0.6,
+          weight: 2,
+          dashArray: '5 5'
+        }
+      }).addTo(couches.nonDesservies);
+
+      zonesNonDesserviesVisible = true;
+      btnNonDesservies.textContent = "Masquer zones non desservies";
+    }
+  });
+
+  // === GESTION DU SELECT buffer individuel ===
+  bufferSelect.addEventListener('change', () => {
+    const selectedIndex = bufferSelect.value;
+    if (selectedIndex === "") {
+      // Aucune sélection -> clear buffer individuel
+      couches.indivBuffer.clearLayers();
+      document.getElementById('statStops').textContent = '-';
+      document.getElementById('statAdr').textContent = '-';
+      document.getElementById('statArea').textContent = '-';
+      return;
+    }
+
+    if (!geoStops) return;
+
+    modeAnalyseIndiv = false; // désactive mode clic
+
+    couches.buffers.clearLayers();
+    couches.nonDesservies.clearLayers();
+    zonesNonDesserviesVisible = false;
+    btnNonDesservies.textContent = "Afficher zones non desservies";
+
+    const distBuffer = Number(document.getElementById('bufferDist').value);
+    if (isNaN(distBuffer) || distBuffer <= 0) {
+      alert("Veuillez saisir une distance de buffer valide (> 0).");
+      return;
+    }
+
+    const stopFeature = geoStops.features[selectedIndex];
+    if (!stopFeature) return;
+
+    const buffer = turf.buffer(turf.point(stopFeature.geometry.coordinates), distBuffer, { units: 'meters' });
+
+    couches.indivBuffer.clearLayers();
+    L.geoJSON(buffer, {
+      style: {
+        color: '#2e7d32',
+        fillColor: '#81c784',
+        fillOpacity: 0.5,
+        weight: 2
+      }
+    }).addTo(couches.indivBuffer);
+
+    calculIndicateurs(buffer);
+
+    // Centrer la carte sur le buffer
+    const coords = stopFeature.geometry.coordinates;
+    map.setView([coords[1], coords[0]], 15);
+  });
+
+  // === FONCTION : afficher zones tampons fusionnées en vert ===
+  function afficherZonesTamponsTous() {
+    couches.buffers.clearLayers();
+    couches.indivBuffer.clearLayers();
+    couches.nonDesservies.clearLayers();
+
+    if (!geoStops) {
+      alert("Les données des arrêts ne sont pas encore chargées.");
+      return;
+    }
+
+    const dist = Number(document.getElementById('bufferDist').value);
+    if (isNaN(dist) || dist <= 0) {
+      alert("Veuillez saisir une distance de buffer valide (> 0).");
+      return;
+    }
+
+    // Créer buffers individuels
+    const buffers = geoStops.features.map(f =>
+      turf.buffer(turf.point(f.geometry.coordinates), dist, { units: 'meters' })
+    );
+
+    // Fusionner buffers
+    let unionBuffer = buffers[0];
+    for (let i = 1; i < buffers.length; i++) {
+      unionBuffer = turf.union(unionBuffer, buffers[i]);
+    }
+
+    // Afficher zone tampon fusionnée en vert
+    L.geoJSON(unionBuffer, {
+      style: {
+        color: '#2e7d32',
+        fillColor: '#81c784',
+        fillOpacity: 0.5,
+        weight: 2
+      }
+    }).addTo(couches.buffers);
+
+    couches.unionBuffer = unionBuffer;
+
+    calculIndicateurs(unionBuffer);
+  }
+
+  // === FONCTION : calculer indicateurs ===
+  function calculIndicateurs(bufferPoly) {
+    if (!geoStops || !geoAdresses) return;
+
+    const stopsInBuffer = turf.pointsWithinPolygon(geoStops, bufferPoly);
+    const adressesInBuffer = turf.pointsWithinPolygon(geoAdresses, bufferPoly);
+
+    const nbStops = stopsInBuffer.features.length;
+    const nbAdresses = geoAdresses.features.length;
+    const nbAdressesIn = adressesInBuffer.features.length;
+
+    const pctAdresses = ((nbAdressesIn / nbAdresses) * 100).toFixed(1);
+    const superficie = turf.area(bufferPoly).toFixed(0);
+
+    document.getElementById('statStops').textContent = nbStops;
+    document.getElementById('statAdr').textContent = pctAdresses + ' %';
+    document.getElementById('statArea').textContent = superficie;
+  }
+
+  // === ÉVÉNEMENT CLIQUE CARTE (analyse individuelle) ===
+  map.on('click', function (e) {
+    if (!modeAnalyseIndiv) return;
+
+    couches.indivBuffer.clearLayers();
+
+    if (!geoStops) return;
+
+    const tolerance = 50; // m
+
+    const clickedPoint = turf.point([e.latlng.lng, e.latlng.lat]);
+    let nearestStop = null;
+    let nearestDistance = Infinity;
+
+    geoStops.features.forEach(stop => {
+      const stopPoint = turf.point(stop.geometry.coordinates);
+      const dist = turf.distance(clickedPoint, stopPoint, { units: 'meters' });
+      if (dist < nearestDistance && dist <= tolerance) {
+        nearestDistance = dist;
+        nearestStop = stop;
+      }
+    });
+
+    if (!nearestStop) {
+      alert("Cliquez près d'un arrêt (moins de 50m) pour analyser.");
+      return;
+    }
+
+    const distBuffer = Number(document.getElementById('bufferDist').value);
+    if (isNaN(distBuffer) || distBuffer <= 0) {
+      alert("Veuillez saisir une distance de buffer valide (> 0).");
+      return;
+    }
+
+    const buffer = turf.buffer(turf.point(nearestStop.geometry.coordinates), distBuffer, { units: 'meters' });
+
+    L.geoJSON(buffer, {
+      style: {
+        color: '#2e7d32',
+        fillColor: '#81c784',
+        fillOpacity: 0.5,
+        weight: 2
+      }
+    }).addTo(couches.indivBuffer);
+
+    calculIndicateurs(buffer);
+
+    // Mettre à jour le select pour qu'il corresponde à l'arrêt sélectionné
+    const idx = geoStops.features.findIndex(f => f === nearestStop);
+    if (idx !== -1) bufferSelect.value = idx;
+
+    // Centrer la carte sur l'arrêt
+    const coords = nearestStop.geometry.coordinates;
+    map.setView([coords[1], coords[0]], 15);
+  });
+</script>
+
+</body>
+</html>
+"""
+    return Response(html_content, mimetype='text/html')
+
+if __name__ == "__main__":
+    app.run(debug=True)
