@@ -121,28 +121,38 @@ def compute_buffers():
             buffer_arrets_gdf.geometry.area.iloc[0]
         )
     }
+    # --------------------------------------------------
+# 4bis. POINTS POUR HEATMAP (lat, lon)
+# --------------------------------------------------
+    adresses_non_desservies_web = adresses_non_desservies.to_crs(CRS_WEB)
+
+    heat_points = [
+        [geom.y, geom.x] 
+        for geom in adresses_non_desservies_web.geometry
+    ]
+
 
     # --------------------------------------------------
     # 5. RÉPONSE JSON POUR LE FRONTEND
     # --------------------------------------------------
     return jsonify({
-        "buffer_arrets": json.loads(
-            buffer_arrets_gdf.to_crs(CRS_WEB).to_json()
-        ),
-        "buffer_lignes": json.loads(
-            buffer_lignes_gdf.to_crs(CRS_WEB).to_json()
-        ),
-        "adresses_proche_ligne": json.loads(
-            adresses_proche_ligne.to_crs(CRS_WEB).to_json()
-        ),
-        "adresses_non_desservies": json.loads(
-            adresses_non_desservies.to_crs(CRS_WEB).to_json()
-        ),
-        "stats": stats
-    })
+    "buffer_arrets": json.loads(
+        buffer_arrets_gdf.to_crs(CRS_WEB).to_json()
+    ),
+    "buffer_lignes": json.loads(
+        buffer_lignes_gdf.to_crs(CRS_WEB).to_json()
+    ),
+    "adresses_non_desservies": json.loads(
+        adresses_non_desservies_web.to_json()
+    ),
+    "heat_points": heat_points,
+    "stats": stats
+})
+
 
 # ==========================
 # LANCEMENT
 # ==========================
 if __name__ == "__main__":
     app.run(debug=True)
+
