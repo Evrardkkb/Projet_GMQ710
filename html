@@ -8,45 +8,55 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
-<!-- MarkerCluster -->
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
-<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+<!-- Leaflet MarkerCluster -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css">
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 
+<!-- Leaflet Heatmap -->
+<script src="https://unpkg.com/leaflet.heat/dist/leaflet-heat.js"></script>
+
 <style>
-body, html { margin:0; height:100%; font-family: Arial, sans-serif; }
+body, html {
+  margin: 0;
+  height: 100%;
+  font-family: Arial, sans-serif;
+}
 
 #panel {
-  position:absolute;
-  width:320px;
-  height:100%;
-  background:white;
-  padding:15px;
-  z-index:1000;
-  border-right:1px solid #ccc;
-  overflow:auto;
+  position: absolute;
+  width: 320px;
+  height: 100%;
+  background: white;
+  padding: 15px;
+  z-index: 1000;
+  border-right: 1px solid #ccc;
+  overflow-y: auto;
 }
 
 #map {
-  position:absolute;
-  left:320px;
-  right:0;
-  top:0;
-  bottom:0;
+  position: absolute;
+  left: 320px;
+  right: 0;
+  top: 0;
+  bottom: 0;
 }
 
 button {
-  width:100%;
-  padding:8px;
-  margin-top:8px;
-  font-weight:bold;
+  width: 100%;
+  padding: 8px;
+  margin-top: 10px;
+  font-weight: bold;
 }
 
-label { display:block; margin-top:8px; }
+label {
+  display: block;
+  margin-top: 8px;
+}
 
 #stats {
-  margin-top:10px;
-  font-size:0.9rem;
+  margin-top: 12px;
+  font-size: 0.9rem;
 }
 </style>
 </head>
@@ -68,6 +78,7 @@ label { display:block; margin-top:8px; }
   <label><input type="checkbox" id="chkBufferArrets" checked> Zone desservie (arrêts)</label>
   <label><input type="checkbox" id="chkBufferLignes" checked> Zone proche des lignes</label>
   <label><input type="checkbox" id="chkAdresses"> Adresses non desservies</label>
+  <label><input type="checkbox" id="chkHeat"> Heatmap zones mal desservies</label>
 
   <hr>
   <div id="stats"></div>
@@ -77,10 +88,13 @@ label { display:block; margin-top:8px; }
 
 <script>
 // ============================
-// INIT CARTE
+// INITIALISATION DE LA CARTE
 // ============================
 const map = L.map('map').setView([45.4, -71.9], 12);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '© OpenStreetMap'
+}).addTo(map);
 
 // ============================
 // COUCHES
@@ -90,6 +104,7 @@ const layers = {
   bufferArrets: L.layerGroup().addTo(map),
   bufferLignes: L.layerGroup().addTo(map),
   adresses: L.layerGroup(),
+  heat: L.layerGroup(),
   arretsCluster: L.markerClusterGroup({
     disableClusteringAtZoom: 16,
     showCoverageOnHover: false
@@ -99,27 +114,34 @@ const layers = {
 // ============================
 // DONNÉES STATIQUES
 // ============================
+
+// LIGNES DE BUS
 fetch('/data/lignes')
   .then(r => r.json())
-  .then(d => {
-    L.geoJSON(d, { style:{ color:'#1565c0', weight:3 } })
-      .addTo(layers.lignes);
+  .then(data => {
+    L.geoJSON(data, {
+      style: { color: '#1565c0', weight: 3 }
+    }).addTo(layers.lignes);
   });
 
+// ARRÊTS (CLUSTER)
 fetch('/data/arrets')
   .then(r => r.json())
-  .then(d => {
+  .then(data => {
+
     const iconBlue = L.icon({
-      iconUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-      shadowUrl:'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-      iconSize:[25,41], iconAnchor:[12,41]
+      iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+      shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+      iconSize: [25, 41],
+      iconAnchor: [12, 41]
     });
 
-    const arrets = L.geoJSON(d, {
-      pointToLayer:(f,ll)=>L.marker(ll,{icon:iconBlue})
+    const geo = L.geoJSON(data, {
+      pointToLayer: (f, latlng) =>
+        L.marker(latlng, { icon: iconBlue })
     });
 
-    layers.arretsCluster.addLayer(arrets);
+    layers.arretsCluster.addLayer(geo);
     map.addLayer(layers.arretsCluster);
   });
 
@@ -131,36 +153,56 @@ function calculer() {
   layers.bufferArrets.clearLayers();
   layers.bufferLignes.clearLayers();
   layers.adresses.clearLayers();
+  layers.heat.clearLayers();
 
   fetch('/compute_buffers', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({distance:Number(dist.value)})
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ distance: Number(dist.value) })
   })
-  .then(r=>r.json())
-  .then(res=>{
+  .then(r => r.json())
+  .then(res => {
 
-    // --- BUFFER ARRETS
-    L.geoJSON(res.buffer_arrets,{
-      style:{color:'#2e7d32',fillColor:'#81c784',fillOpacity:0.4}
+    // BUFFER ARRÊTS
+    L.geoJSON(res.buffer_arrets, {
+      style: {
+        color: '#2e7d32',
+        fillColor: '#81c784',
+        fillOpacity: 0.4
+      }
     }).addTo(layers.bufferArrets);
 
-    // --- BUFFER LIGNES
-    L.geoJSON(res.buffer_lignes,{
-      style:{color:'#ff8f00',fillColor:'#ffcc80',fillOpacity:0.35}
+    // BUFFER LIGNES
+    L.geoJSON(res.buffer_lignes, {
+      style: {
+        color: '#ff8f00',
+        fillColor: '#ffcc80',
+        fillOpacity: 0.35
+      }
     }).addTo(layers.bufferLignes);
 
-    // --- ADRESSES NON DESSERVIES
-    L.geoJSON(res.adresses_non_desservies,{
-      pointToLayer:(f,ll)=>L.circleMarker(ll,{
-        radius:3,
-        fillColor:'#d32f2f',
-        color:'#b71c1c',
-        fillOpacity:0.80
-      })
+    // ADRESSES NON DESSERVIES
+    L.geoJSON(res.adresses_non_desservies, {
+      pointToLayer: (f, latlng) =>
+        L.circleMarker(latlng, {
+          radius: 4,
+          fillColor: '#d32f2f',
+          color: '#b71c1c',
+          weight: 1,
+          fillOpacity: 0.85
+        })
     }).addTo(layers.adresses);
 
-    // --- STATS
+    // HEATMAP KDE
+    const heatLayer = L.heatLayer(res.heat_points, {
+      radius: 25,
+      blur: 18,
+      maxZoom: 17
+    });
+
+    layers.heat.addLayer(heatLayer);
+
+    // STATS
     document.getElementById("stats").innerHTML = `
       <b>Arrêts :</b> ${res.stats.nb_arrets}<br>
       <b>Adresses desservies :</b> ${res.stats.pct_desservies}%<br>
@@ -174,16 +216,29 @@ function calculer() {
 // CHECKBOXES
 // ============================
 document.getElementById("chkArrets").onchange = e =>
-  e.target.checked ? map.addLayer(layers.arretsCluster) : map.removeLayer(layers.arretsCluster);
+  e.target.checked
+    ? map.addLayer(layers.arretsCluster)
+    : map.removeLayer(layers.arretsCluster);
 
 document.getElementById("chkBufferArrets").onchange = e =>
-  e.target.checked ? map.addLayer(layers.bufferArrets) : map.removeLayer(layers.bufferArrets);
+  e.target.checked
+    ? map.addLayer(layers.bufferArrets)
+    : map.removeLayer(layers.bufferArrets);
 
 document.getElementById("chkBufferLignes").onchange = e =>
-  e.target.checked ? map.addLayer(layers.bufferLignes) : map.removeLayer(layers.bufferLignes);
+  e.target.checked
+    ? map.addLayer(layers.bufferLignes)
+    : map.removeLayer(layers.bufferLignes);
 
 document.getElementById("chkAdresses").onchange = e =>
-  e.target.checked ? map.addLayer(layers.adresses) : map.removeLayer(layers.adresses);
+  e.target.checked
+    ? map.addLayer(layers.adresses)
+    : map.removeLayer(layers.adresses);
+
+document.getElementById("chkHeat").onchange = e =>
+  e.target.checked
+    ? map.addLayer(layers.heat)
+    : map.removeLayer(layers.heat);
 </script>
 
 </body>
