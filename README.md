@@ -3,21 +3,17 @@
 
 ## Objectif du projet
 
-Ce projet vise à analyser la répartition spatiale de l’accessibilité aux transports publics (bus, métro, etc.) dans la ville de Sherbrooke.
-En utilisant GeoPandas, Shapely et Folium, l’étude croise les données de transport (réseau et arrêts) avec les zones d’habitation ou d’activités, afin de produire une carte interactive affichant les zones bien desservies ou isolées.
+Ce projet vise à analyser l’accessibilité aux transports publics (réseau d’autobus) dans la ville de Sherbrooke à l’aide d’une approche géospatiale intégrée.
+L’objectif est d’identifier les zones urbaines desservies et non desservies par le réseau de transport collectif de la Société de Transport de Sherbrooke(STS), à partir d’analyses spatiales et de leur visualisation dans une application cartographique interactive.
 
-Une composante avancée prévoit également :
-
-* Le calcul d’indicateurs d’accessibilité (ex. : proportion de bâtiments ou population couverts)
-* La génération automatique de graphiques
-* Un rapport synthétique exporté en **HTML**
+Le projet repose sur une approche hybride combinant une base de données spatiale (PostGIS) et Python, afin d’assurer à la fois de bonnes performances pour les calculs spatiaux et une grande flexibilité pour la visualisation et l’interaction utilisateur.
 
 | **Source**                                          | **Type** | **Format**          | **Utilité**                                                                               |
 | --------------------------------------------------- | -------- | ------------------- | ----------------------------------------------------------------------------------------- |
-| Données Québec – GTFS                               | Vecteur  | Shapefile / GeoJSON | Informations sur les lignes et réseaux d’autobus pour évaluer la couverture du territoire |
-| Données Québec – Arrêts de bus                      | Vecteur  | Shapefile / GeoJSON | Localisation des arrêts utilisée pour créer les zones de desserte (buffers)               |
-| Ville de Sherbrooke – Zonage habitation / activités | Vecteur  | Shapefile / GeoJSON | Répartition des zones urbaines pour analyser la desserte du réseau                        |
-| Ville de Sherbrooke – Limite administrative         | Vecteur  | Shapefile / GeoJSON | Délimitation précise de la zone d’étude                                                   |
+| Données Québec – GTFS                               | Vecteur  | Shapefile / GeoJSON | Informations sur les lignes et réseaux d’autobus pour évaluer la couverture du territoire https://www.donneesquebec.ca/recherche/dataset/transport-sts |
+| Données Québec – Arrêts de bus                      | Vecteur  | Shapefile / GeoJSON | Localisation des arrêts utilisée pour créer les zones de desserte (buffers) https://www.donneesquebec.ca/recherche/dataset/transport-sts              |
+| Ville de Sherbrooke – Zonage habitation / activités | Vecteur  | Shapefile / GeoJSON | Répartition des zones urbaines pour analyser la desserte du réseau   https://donneesouvertes-sherbrooke.opendata.arcgis.com/search?q=adresse                     |
+
 
 
 ## Approche méthodologique
