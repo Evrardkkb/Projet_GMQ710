@@ -1,158 +1,144 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, request, jsonify, render_template
 import geopandas as gpd
+from sqlalchemy import create_engine, text
 import json
-import os
 
 app = Flask(__name__)
 
 # ==========================
-# CONFIGURATION
+# CRS
 # ==========================
-DATA_DIR = "data"
-
-CRS_PROJ = "EPSG:32198"   # Québec Lambert (mètres)
-CRS_WEB = "EPSG:4326"    # Web (Leaflet)
-
-BUFFER_LIGNE = 200  # mètres (proximité aux lignes de bus)
+CRS_DB = 32198   # MTM Québec
+CRS_WEB = 4326  # WGS84 (Leaflet)
 
 # ==========================
-# CHARGEMENT DES DONNÉES
+# DATABASE
 # ==========================
-arrets = gpd.read_file(os.path.join(DATA_DIR, "Stop.geojson"))
-adresses = gpd.read_file(os.path.join(DATA_DIR, "Adresse_-2526919596127878911.geojson"))
-lignes = gpd.read_file(os.path.join(DATA_DIR, "lignes_bus_fusionnees.geojson"))
-
-# Reprojection métrique (pour calculs spatiaux)
-arrets_p = arrets.to_crs(CRS_PROJ)
-adresses_p = adresses.to_crs(CRS_PROJ)
-lignes_p = lignes.to_crs(CRS_PROJ)
+engine = create_engine(
+    "postgresql://postgres:gmq719@localhost:5432/Projet_db"
+)
 
 # ==========================
-# ROUTES DE BASE
+# PAGE PRINCIPALE
 # ==========================
 @app.route("/")
 def index():
     return render_template("index.html")
 
+# ==========================
+# DONNÉES STATIQUES
+# ==========================
 @app.route("/data/arrets")
 def get_arrets():
-    return arrets.to_crs(CRS_WEB).to_json()
+    sql = "SELECT id, geom FROM stops"
+    gdf = gpd.read_postgis(sql, engine, geom_col="geom", crs=CRS_DB)
+    return gdf.to_crs(CRS_WEB).to_json()
 
 @app.route("/data/lignes")
 def get_lignes():
-    return lignes.to_crs(CRS_WEB).to_json()
+    sql = "SELECT id, geom FROM lignes_bus"
+    gdf = gpd.read_postgis(sql, engine, geom_col="geom", crs=CRS_DB)
+    return gdf.to_crs(CRS_WEB).to_json()
+
+@app.route("/data/buffer_lignes")
+def get_buffer_lignes():
+    """
+    Buffer lignes déjà calculé en base (buffer_200m)
+    """
+    sql = """
+        SELECT ST_Union(buffer_200m) AS geom
+        FROM lignes_bus
+    """
+    gdf = gpd.read_postgis(sql, engine, geom_col="geom", crs=CRS_DB)
+    return gdf.to_crs(CRS_WEB).to_json()
 
 # ==========================
-# ANALYSE SPATIALE
+# ANALYSE DYNAMIQUE
 # ==========================
 @app.route("/compute_buffers", methods=["POST"])
 def compute_buffers():
 
-    # Distance du buffer autour des arrêts (envoyée par le frontend)
-    dist = float(request.json["distance"])
+    data = request.get_json()
+    buffer_dist = float(data.get("distance", 500))
 
-    # --------------------------------------------------
-    # 1. BUFFER SUR LES ARRÊTS
-    # --------------------------------------------------
-    buffers_arrets = arrets_p.geometry.buffer(dist)
+    # ==========================
+    # Buffer arrêts fusionné
+    # ==========================
+    sql_buffer = f"""
+        SELECT ST_Union(ST_Buffer(geom, {buffer_dist})) AS geom
+        FROM stops
+    """
+    gdf_buffer = gpd.read_postgis(
+        sql_buffer, engine, geom_col="geom", crs=CRS_DB
+    ).to_crs(CRS_WEB)
 
-    buffer_arrets_union = buffers_arrets.union_all()
-
-    buffer_arrets_gdf = gpd.GeoDataFrame(
-        geometry=[buffer_arrets_union],
-        crs=CRS_PROJ
-    )
-
-    # --------------------------------------------------
-    # 2. BUFFER SUR LES LIGNES DE BUS
-    # --------------------------------------------------
-    buffer_lignes = lignes_p.geometry.buffer(BUFFER_LIGNE)
-
-    buffer_lignes_union = buffer_lignes.union_all()
-
-    buffer_lignes_gdf = gpd.GeoDataFrame(
-        geometry=[buffer_lignes_union],
-        crs=CRS_PROJ
-    )
-
-    # --------------------------------------------------
-    # 3. ANALYSE DES ADRESSES (MULTIMODALE)
-    # --------------------------------------------------
-    adresses_local = adresses_p.copy()
-
-    # desservie par un arrêt
-    adresses_local["desservie_arret"] = adresses_local.geometry.intersects(
-        buffer_arrets_union
-    )
-
-    # proche d’une ligne de bus
-    adresses_local["proche_ligne"] = adresses_local.geometry.intersects(
-        buffer_lignes_union
-    )
-
-    # Catégories finales
-    adresses_desservies = adresses_local[
-        adresses_local["desservie_arret"]
-    ]
-
-    adresses_proche_ligne = adresses_local[
-        (~adresses_local["desservie_arret"]) &
-        (adresses_local["proche_ligne"])
-    ]
-
-    adresses_non_desservies = adresses_local[
-        (~adresses_local["desservie_arret"]) &
-        (~adresses_local["proche_ligne"])
-    ]
-
-    # --------------------------------------------------
-    # 4. STATISTIQUES
-    # --------------------------------------------------
-    stats = {
-        "nb_arrets": int(len(arrets)),
-        "nb_adresses": int(len(adresses)),
-        "nb_desservies_arret": int(len(adresses_desservies)),
-        "nb_proche_ligne": int(len(adresses_proche_ligne)),
-        "nb_non_desservies": int(len(adresses_non_desservies)),
-        "pct_desservies": round(
-            (len(adresses_desservies) / len(adresses)) * 100, 1
-        ),
-        "surface_buffer_arrets_m2": int(
-            buffer_arrets_gdf.geometry.area.iloc[0]
+    # ==========================
+    # Adresses non desservies
+    # ==========================
+    sql_adresses = f"""
+        SELECT a.id, a.geom
+        FROM adresse a
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM stops s
+            WHERE ST_DWithin(a.geom, s.geom, {buffer_dist})
         )
-    }
-    # --------------------------------------------------
-# 4bis. POINTS POUR HEATMAP (lat, lon)
-# --------------------------------------------------
-    adresses_non_desservies_web = adresses_non_desservies.to_crs(CRS_WEB)
+    """
+    gdf_adresses = gpd.read_postgis(
+        sql_adresses, engine, geom_col="geom", crs=CRS_DB
+    ).to_crs(CRS_WEB)
 
     heat_points = [
-        [geom.y, geom.x] 
-        for geom in adresses_non_desservies_web.geometry
+        [geom.y, geom.x] for geom in gdf_adresses.geometry
     ]
 
+    # ==========================
+    # STATISTIQUES
+    # ==========================
+    sql_stats = text(f"""
+        SELECT
+            (SELECT COUNT(*) FROM adresse) AS nb_adresses,
+            (SELECT COUNT(*) FROM stops) AS nb_arrets,
+            (
+                SELECT COUNT(DISTINCT a.id)
+                FROM adresse a
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM stops s
+                    WHERE ST_DWithin(a.geom, s.geom, {buffer_dist})
+                )
+            ) AS nb_desservies
+    """)
 
-    # --------------------------------------------------
-    # 5. RÉPONSE JSON POUR LE FRONTEND
-    # --------------------------------------------------
+    with engine.connect() as conn:
+        stats = conn.execute(sql_stats).fetchone()
+
+    nb_non_desservies = stats.nb_adresses - stats.nb_desservies
+
+    pct_desservies = round(
+        (stats.nb_desservies / stats.nb_adresses) * 100
+        if stats.nb_adresses > 0 else 0,
+        1
+    )
+
+    # ==========================
+    # RÉPONSE JSON
+    # ==========================
     return jsonify({
-    "buffer_arrets": json.loads(
-        buffer_arrets_gdf.to_crs(CRS_WEB).to_json()
-    ),
-    "buffer_lignes": json.loads(
-        buffer_lignes_gdf.to_crs(CRS_WEB).to_json()
-    ),
-    "adresses_non_desservies": json.loads(
-        adresses_non_desservies_web.to_json()
-    ),
-    "heat_points": heat_points,
-    "stats": stats
-})
-
+        "buffer_arrets": json.loads(gdf_buffer.to_json()),
+        "adresses_non_desservies": json.loads(gdf_adresses.to_json()),
+        "heat_points": heat_points,
+        "stats": {
+            "nb_arrets": stats.nb_arrets,
+            "nb_adresses": stats.nb_adresses,
+            "nb_desservies": stats.nb_desservies,
+            "nb_non_desservies": nb_non_desservies,
+            "pct_desservies": pct_desservies
+        }
+    })
 
 # ==========================
-# LANCEMENT
+# RUN
 # ==========================
 if __name__ == "__main__":
     app.run(debug=True)
-
