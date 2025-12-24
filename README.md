@@ -46,7 +46,7 @@ Python est utilisé comme couche de contrôle et de traitement applicatif.
 
 3. **Visualisation cartographique interactive**
 
-Une application web permet d’explorer les résultats de manière interactive.
+Notre application web permet d’explorer les résultats de manière interactive.
 
   * Affichage des couches spatiales (lignes, arrêts, buffers, et heatmap)
   * Visualisation des zones non desservies
