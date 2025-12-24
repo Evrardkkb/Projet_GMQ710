@@ -1,115 +1,190 @@
+# ==========================
+# IMPORTS
+# ==========================
+# Flask : framework web pour créer l’API et servir la page HTML
+from flask import Flask, request, jsonify, render_template
+
+# GeoPandas : manipulation de données géospatiales côté Python
 import geopandas as gpd
-import folium
-from folium.plugins import MarkerCluster
-from shapely.ops import unary_union
 
-# -----------------------------
-# 1. Chargement des données
-# -----------------------------
-f_arrets = "Stop.geojson"
-f_lignes = "lignes_bus_fusionnees.geojson"
-f_adresse = "Adresse_-2526919596127878911.geojson"
+# SQLAlchemy : connexion et exécution de requêtes SQL sur PostgreSQL/PostGIS
+from sqlalchemy import create_engine, text
 
-# Chargement des fichiers sans set_crs()
-arrets = gpd.read_file(f_arrets)
-lignes = gpd.read_file(f_lignes)
-zones  = gpd.read_file(f_adresse)
+# json : conversion des objets GeoJSON
+import json
 
-# -----------------------------
-# 2. Reprojection
-# -----------------------------
-target_crs = "EPSG:32198"
+# ==========================
+# INITIALISATION DE L’APPLICATION FLASK
+# ==========================
+app = Flask(__name__)
 
-arrets = arrets.to_crs(target_crs)
-lignes = lignes.to_crs(target_crs)
-zones  = zones.to_crs(target_crs)
+# ==========================
+# SYSTÈMES DE RÉFÉRENCE SPATIALE (CRS)
+# ==========================
+# CRS_DB : projection utilisée dans la base de données (mètres, adaptée aux calculs de distance)
+CRS_DB = 32198   # MTM Québec
 
-# -----------------------------
-# 3. Analyses spatiales
-# -----------------------------
-buffer_distance = 400  # en mètres
-arrets["buffer"] = arrets.geometry.buffer(buffer_distance)
-buffers = gpd.GeoDataFrame(geometry=arrets["buffer"], crs=target_crs)
+# CRS_WEB : projection utilisée pour l’affichage web (Leaflet fonctionne en WGS84)
+CRS_WEB = 4326  # WGS84
 
-buffer_union = unary_union(buffers.geometry)
-buffer_union = gpd.GeoDataFrame(geometry=[buffer_union], crs=target_crs)
-
-zones["desservi"] = zones.intersects(buffer_union.geometry[0])
-
-zones_serv = zones[zones["desservi"] == True]
-zones_non_serv = zones[zones["desservi"] == False]
-
-# REMARQUE :
-# zones_serv et zones_non_serv NE SONT PAS ajoutées sur la carte.
-# Elles servent uniquement à l’analyse.
-
-# -----------------------------
-# 4. Carte Folium
-# -----------------------------
-carte = folium.Map(location=[45.4, -71.9], zoom_start=12)
-
-# --- Clustering des arrêts
-marker_cluster = MarkerCluster(name="Arrêts de bus").add_to(carte)
-
-for _, row in arrets.to_crs("EPSG:4326").iterrows():
-    folium.Marker(
-        location=[row.geometry.y, row.geometry.x]
-    ).add_to(marker_cluster)
-
-# -----------------------------
-# 5. Lignes de bus (chargées dynamiquement)
-# -----------------------------
-lignes_layer = folium.GeoJson(
-    lignes.to_crs("EPSG:4326"),
-    name="Réseau de bus",
-    style_function=lambda x: {"color": "blue", "weight": 2}
+# ==========================
+# CONNEXION À LA BASE DE DONNÉES POSTGIS
+# ==========================
+# Connexion à PostgreSQL avec PostGIS activé
+engine = create_engine(
+    "postgresql://postgres:gmq719@localhost:5432/Projet_db"
 )
 
-carte.add_child(lignes_layer)
+# ==========================
+# ROUTE : PAGE PRINCIPALE
+# ==========================
+# Affiche la page HTML contenant la carte Leaflet
+@app.route("/")
+def index():
+    return render_template("index.html")
 
-# -----------------------------
-# 6. Lazy loading : afficher lignes seulement si zoom >= 13
-# -----------------------------
-initial_js = f"""
-<script>
-function toggleLayersByZoom() {{
-    var map = window.map;
-    var zoom = map.getZoom();
+# ==========================
+# ROUTES : DONNÉES STATIQUES
+# ==========================
+# Ces données sont chargées une seule fois au démarrage de la carte
 
-    var minZoomToShow = 13;
-    var layer = {lignes_layer.get_name()};
+@app.route("/data/arrets")
+def get_arrets():
+    # Récupération des arrêts de bus depuis la base de données
+    sql = "SELECT id, geom FROM stops"
+    gdf = gpd.read_postgis(sql, engine, geom_col="geom", crs=CRS_DB)
 
-    if (zoom >= minZoomToShow) {{
-        if (!map.hasLayer(layer)) {{
-            map.addLayer(layer);
-        }}
-    }} else {{
-        if (map.hasLayer(layer)) {{
-            map.removeLayer(layer);
-        }}
-    }}
-}}
+    # Reprojection vers WGS84 pour l’affichage Leaflet
+    return gdf.to_crs(CRS_WEB).to_json()
 
-document.addEventListener('DOMContentLoaded', function () {{
-    var map = window.map;
-    toggleLayersByZoom();
+@app.route("/data/lignes")
+def get_lignes():
+    # Récupération des lignes de bus
+    sql = "SELECT id, geom FROM lignes_bus"
+    gdf = gpd.read_postgis(sql, engine, geom_col="geom", crs=CRS_DB)
 
-    map.on('zoomend', function() {{
-        toggleLayersByZoom();
-    }});
-}});
-</script>
-"""
+    # Conversion en GeoJSON pour le web
+    return gdf.to_crs(CRS_WEB).to_json()
 
-carte.get_root().html.add_child(folium.Element(initial_js))
+@app.route("/data/buffer_lignes")
+def get_buffer_lignes():
+    """
+    Buffer des lignes de bus déjà calculé dans la base de données.
+    Le buffer (200 m) est stocké dans la colonne buffer_200m
+    afin d’éviter un recalcul coûteux côté serveur.
+    """
+    sql = """
+        SELECT ST_Union(buffer_200m) AS geom
+        FROM lignes_bus
+    """
+    gdf = gpd.read_postgis(sql, engine, geom_col="geom", crs=CRS_DB)
 
-# -----------------------------
-# 7. Contrôle des couches
-# -----------------------------
-folium.LayerControl().add_to(carte)
+    # Reprojection pour l’affichage web
+    return gdf.to_crs(CRS_WEB).to_json()
 
-# -----------------------------
-# 8. Export
-# -----------------------------
-carte.save("carte_avec_clustering_et_lazyloading.html")
-print("Carte générée : lignes chargées uniquement lorsque zoom >= 13, adresses non affichées.")
+# ==========================
+# ROUTE : ANALYSE SPATIALE DYNAMIQUE
+# ==========================
+# Cette route est appelée lorsque l’utilisateur lance l’analyse
+# avec une distance de buffer paramétrable
+
+@app.route("/compute_buffers", methods=["POST"])
+def compute_buffers():
+
+    # Lecture des paramètres envoyés depuis le HTML (distance de buffer)
+    data = request.get_json()
+    buffer_dist = float(data.get("distance", 500))
+
+    # ==========================
+    # BUFFER DES ARRÊTS
+    # ==========================
+    # Création d’un buffer autour de chaque arrêt
+    # puis fusion de tous les buffers en une seule géométrie
+    sql_buffer = f"""
+        SELECT ST_Union(ST_Buffer(geom, {buffer_dist})) AS geom
+        FROM stops
+    """
+    gdf_buffer = gpd.read_postgis(
+        sql_buffer, engine, geom_col="geom", crs=CRS_DB
+    ).to_crs(CRS_WEB)
+
+    # ==========================
+    # ADRESSES NON DESSERVIES
+    # ==========================
+    # Sélection des adresses situées en dehors du buffer des arrêts
+    sql_adresses = f"""
+        SELECT a.id, a.geom
+        FROM adresse a
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM stops s
+            WHERE ST_DWithin(a.geom, s.geom, {buffer_dist})
+        )
+    """
+    gdf_adresses = gpd.read_postgis(
+        sql_adresses, engine, geom_col="geom", crs=CRS_DB
+    ).to_crs(CRS_WEB)
+
+    # Extraction des coordonnées pour la heatmap Leaflet
+    heat_points = [
+        [geom.y, geom.x] for geom in gdf_adresses.geometry
+    ]
+
+    # ==========================
+    # STATISTIQUES GLOBALES
+    # ==========================
+    # Calcul :
+    # - nombre total d’adresses
+    # - nombre d’arrêts
+    # - nombre d’adresses desservies par au moins un arrêt
+    sql_stats = text(f"""
+        SELECT
+            (SELECT COUNT(*) FROM adresse) AS nb_adresses,
+            (SELECT COUNT(*) FROM stops) AS nb_arrets,
+            (
+                SELECT COUNT(DISTINCT a.id)
+                FROM adresse a
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM stops s
+                    WHERE ST_DWithin(a.geom, s.geom, {buffer_dist})
+                )
+            ) AS nb_desservies
+    """)
+
+    # Exécution de la requête SQL
+    with engine.connect() as conn:
+        stats = conn.execute(sql_stats).fetchone()
+
+    # Calcul du nombre d’adresses non desservies
+    nb_non_desservies = stats.nb_adresses - stats.nb_desservies
+
+    # Calcul du pourcentage d’adresses desservies
+    pct_desservies = round(
+        (stats.nb_desservies / stats.nb_adresses) * 100
+        if stats.nb_adresses > 0 else 0,
+        1
+    )
+
+    # ==========================
+    # RÉPONSE JSON ENVOYÉE AU FRONTEND
+    # ==========================
+    return jsonify({
+        "buffer_arrets": json.loads(gdf_buffer.to_json()),
+        "adresses_non_desservies": json.loads(gdf_adresses.to_json()),
+        "heat_points": heat_points,
+        "stats": {
+            "nb_arrets": stats.nb_arrets,
+            "nb_adresses": stats.nb_adresses,
+            "nb_desservies": stats.nb_desservies,
+            "nb_non_desservies": nb_non_desservies,
+            "pct_desservies": pct_desservies
+        }
+    })
+
+# ==========================
+# LANCEMENT DE L’APPLICATION
+# ==========================
+if __name__ == "__main__":
+    # Mode debug activé pour le développement
+    app.run(debug=True)
