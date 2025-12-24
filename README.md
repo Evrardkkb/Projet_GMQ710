@@ -25,7 +25,7 @@ L’analyse est réalisée à l’aide d’une architecture hybride PostGIS et P
 La base de données constitue le cœur du système d’analyse spatiale et permet
    * Le stockage des couches géographiques (lignes de bus, arrêts, adresses)
    * La gestion des systèmes de coordonnées
-   * Réalisation des opérations spatiales directement en SQL, notamment :
+   * La réalisation des opérations spatiales directement en SQL, notamment :
        * création de zones tampons (ST_Buffer)
        * fusion de géométries (ST_Union)
        * calculs de proximité (ST_DWithin)
